@@ -39,6 +39,7 @@ async function run() {
 
     const database = client.db("cashlessDB");
     const usersCollection = database.collection("users");
+    const cashoutCollection = database.collection("cashout");
 
     // JWT-related API endpoints
     const authenticateToken = (req, res, next) => {
@@ -46,7 +47,7 @@ async function run() {
       const token = authHeader && authHeader.split(" ")[1];
 
       if (!token) {
-        return res.sendStatus(403);;
+        return res.sendStatus(403);
       }
 
       jwt.verify(token, accessToken, (err, user) => {
@@ -156,21 +157,25 @@ async function run() {
     // Update user status (Activate/Block) (Admin only)
     app.post("/users/:userId", authenticateToken, async (req, res) => {
       try {
-        if (req.user.role !== "admin") {
-          return res.status(403).json({ error: "Access denied" });
-        }
-
         const { userId } = req.params;
         const { status } = req.body;
 
-        // Validate status
-        if (!["active", "blocked"].includes(status)) {
-          return res.status(400).json({ error: "Invalid status value" });
+        const user = await usersCollection.findOne({
+          _id: new ObjectId(userId),
+        });
+
+        if (!user) {
+          return res.status(404).json({ error: "User not found" });
+        }
+
+        let bonus = 0;
+        if (status === "active") {
+          bonus = user.role === "agent" ? 10000 : 40;
         }
 
         const result = await usersCollection.updateOne(
           { _id: new ObjectId(userId) },
-          { $set: { status } }
+          { $set: { status, balance: user.balance + bonus } }
         );
 
         if (result.modifiedCount === 0) {
@@ -179,9 +184,47 @@ async function run() {
             .json({ error: "User not found or status not updated" });
         }
 
-        res.status(200).json({ message: "User status updated successfully" });
+        res
+          .status(200)
+          .json({ message: "User status and balance updated successfully" });
       } catch (error) {
-        console.error("Error updating user status:", error);
+        console.error("Error updating user status and balance:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // POST endpoint for cash-out
+    app.post("/cashout", authenticateToken, async (req, res) => {
+      try {
+        const { amount, pin, phone, agentPhone } = req.body;
+
+        // Verify PIN (example: using bcrypt for hashing and comparing)
+        const user = await usersCollection.findOne({ phone });
+        if (!user || !bcrypt.compareSync(pin, user.pin)) {
+          return res.status(401).json({ error: "Invalid PIN" });
+        }
+
+        // Store cash-out request (adjust based on your DB schema)
+        const result = await cashoutCollection.insertOne({
+          userId: user._id,
+          amount,
+          agentPhone,
+          status: "pending", // Example: you might want to track status
+          createdAt: new Date(),
+        });
+
+        if (!result.insertedId) {
+          return res
+            .status(500)
+            .json({ error: "Failed to store cash-out request" });
+        }
+
+        // Respond with success message
+        res
+          .status(200)
+          .json({ message: "Cash-out request stored successfully" });
+      } catch (error) {
+        console.error("Error during cash-out:", error);
         res.status(500).json({ error: "Internal server error" });
       }
     });
