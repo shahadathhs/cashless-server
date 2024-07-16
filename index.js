@@ -11,7 +11,9 @@ const port = process.env.PORT || 5000;
 // Middleware
 app.use(
   cors({
-    origin: ["http://localhost:5173"],
+    origin: [
+      "http://localhost:5173",
+    ],
     credentials: true,
   })
 );
@@ -35,14 +37,18 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
+    // await client.connect();
+
     const database = client.db("cashlessDB");
     const usersCollection = database.collection("users");
 
     // JWT-related API endpoints
     const authenticateToken = (req, res, next) => {
-      const token = req.headers['authorization'];
+      const authHeader = req.headers['authorization'];
+      const token = authHeader && authHeader.split(' ')[1];
+    
       if (!token) {
-        return res.sendStatus(403);
+        return res.sendStatus(403); 
       }
     
       jwt.verify(token, accessToken, (err, user) => {
@@ -59,7 +65,7 @@ async function run() {
     // Register an account
     app.post('/register', async (req, res) => {
       try {
-        const { name, pin, phone, email } = req.body;
+        const { name, pin, phone, email, role } = req.body;
     
         // Validate that the PIN is exactly 5 digits
         if (!/^\d{5}$/.test(pin)) {
@@ -74,6 +80,7 @@ async function run() {
           pin: hashedPin,
           phone,
           email,
+          role,
           status: 'pending',
           balance: 0
         };
@@ -87,7 +94,7 @@ async function run() {
       }
     });
 
-    // Login to an account
+    // Login into account and sending user details
     app.post('/login', async (req, res) => {
       try {
         const { identifier, pin } = req.body;
@@ -107,9 +114,9 @@ async function run() {
           return res.status(401).json({ error: 'Invalid credentials' });
         }
     
-        const token = jwt.sign({ id: user._id, role: 'user' }, accessToken, { expiresIn: '1h' });
+        const token = jwt.sign({ id: user._id, role: user.role }, accessToken, { expiresIn: '1h' });
     
-        res.status(200).json({ token });
+        res.status(200).json({ token, user });
       } catch (error) {
         console.error('Error during login:', error);
         res.status(500).json({ error: 'Internal server error' });
@@ -119,14 +126,15 @@ async function run() {
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
     // Ensures that the client will close when you finish/error
+    // await client.close();
   }
 }
 run().catch(console.dir);
 
 app.get('/', (req, res) => {
-  res.send('Cashless Server Running!');
-});
+  res.send('Cashless Server Running!')
+})
 
 app.listen(port, () => {
-  console.log(`Cashless Server listening on port ${port}`);
-});
+  console.log(`Cashless Server listening on port ${port}`)
+})
