@@ -1,6 +1,7 @@
 const express = require('express');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const cors = require('cors');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const app = express();
@@ -39,7 +40,7 @@ async function run() {
     // await client.connect();
 
     const database = client.db("cashlessDB");
-    
+    const usersCollection = database.collection("users");
     
     // Middleware to verify token for private routes
     const verifyToken = async (req, res, next) => {
@@ -109,6 +110,38 @@ async function run() {
       console.log("logging out", userEmail);
       // Clear the token cookie
       res.clearCookie("token", { ...cookieOptions, maxAge: 0 }).send({ logoutSuccess: true });
+    });
+
+    // USERS-related API endpoints
+    // creating a user
+    app.post('/users', async (req, res) => {
+      try {
+        const { name, pin, phone, email } = req.body;
+    
+        // Validate that the PIN is exactly 5 digits
+        if (!/^\d{5}$/.test(pin)) {
+          return res.status(400).json({ error: 'PIN must be exactly 5 digits.' });
+        }
+    
+        // Hash the PIN before saving it
+        const hashedPin = await bcrypt.hash(pin, 10);
+    
+        const user = {
+          name,
+          pin: hashedPin,
+          phone,
+          email,
+          status: 'pending',
+          balance: 0
+        };
+    
+        await usersCollection.insertOne(user);
+    
+        res.status(200).json({ message: 'User registered successfully' });
+      } catch (error) {
+        console.error('Error registering user:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
     });
 
     // Send a ping to confirm a successful connection
