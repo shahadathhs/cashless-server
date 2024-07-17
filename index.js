@@ -40,6 +40,7 @@ async function run() {
     const database = client.db("cashlessDB");
     const usersCollection = database.collection("users");
     const cashoutCollection = database.collection("cashout");
+    const cashinCollection = database.collection("cashin");
     const sendMonyCollection = database.collection("sendMoney");
 
     // JWT-related API endpoints
@@ -198,36 +199,39 @@ async function run() {
     app.get("/balance/:userId", authenticateToken, async (req, res) => {
       try {
         const { userId } = req.params;
-        const user = await usersCollection.findOne({ _id: new ObjectId(userId) }, { projection: { balance: 1 } });
-        
+        const user = await usersCollection.findOne(
+          { _id: new ObjectId(userId) },
+          { projection: { balance: 1 } }
+        );
+
         if (!user) {
           return res.status(404).json({ error: "User not found" });
         }
-    
+
         res.status(200).json({ balance: user.balance });
       } catch (error) {
         console.error("Error fetching balance:", error);
         res.status(500).json({ error: "Internal server error" });
       }
-    });    
+    });
 
     // POST endpoint for cash-out
     app.post("/cashout", authenticateToken, async (req, res) => {
       try {
         const { amount, pin, phone, agentPhone } = req.body;
 
-        // Verify PIN (example: using bcrypt for hashing and comparing)
+        // Verify PIN
         const user = await usersCollection.findOne({ phone });
         if (!user || !bcrypt.compareSync(pin, user.pin)) {
           return res.status(401).json({ error: "Invalid PIN" });
         }
         const intAmount = parseInt(amount);
-        // Store cash-out request (adjust based on your DB schema)
+        // Store cash-out request
         const result = await cashoutCollection.insertOne({
           userId: user._id,
           amount: intAmount,
           agentPhone,
-          status: "pending", // Example: you might want to track status
+          status: "pending",
           createdAt: new Date(),
         });
 
@@ -243,6 +247,43 @@ async function run() {
           .json({ message: "Cash-out request stored successfully" });
       } catch (error) {
         console.error("Error during cash-out:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // POST endpoint for cash-in
+    app.post("/cashin", authenticateToken, async (req, res) => {
+      try {
+        const { amount, pin, phone, agentPhone } = req.body;
+
+        // Verify PIN
+        const user = await usersCollection.findOne({ phone });
+        if (!user || !bcrypt.compareSync(pin, user.pin)) {
+          return res.status(401).json({ error: "Invalid PIN" });
+        }
+        const intAmount = parseInt(amount);
+
+        // Store cash-in request
+        const result = await cashinCollection.insertOne({
+          userId: user._id,
+          amount: intAmount,
+          agentPhone,
+          status: "pending",
+          createdAt: new Date(),
+        });
+
+        if (!result.insertedId) {
+          return res
+            .status(500)
+            .json({ error: "Failed to store cash-in request" });
+        }
+
+        // Respond with success message
+        res
+          .status(200)
+          .json({ message: "Cash-in request stored successfully" });
+      } catch (error) {
+        console.error("Error during cash-in:", error);
         res.status(500).json({ error: "Internal server error" });
       }
     });
@@ -322,6 +363,27 @@ async function run() {
       } catch (error) {
         console.error("Error during transaction:", error);
         res.status(500).json({ error: "Internal server error." });
+      }
+    });
+
+    // Get last 10 transactions for a user
+    app.get("/transactions/:userId", authenticateToken, async (req, res) => {
+      try {
+        const { userId } = req.params;
+        const transactions = await sendMonyCollection
+          .find({ senderId: new ObjectId(userId) })
+          .sort({ createdAt: -1 })
+          .limit(10)
+          .toArray();
+
+        if (!transactions) {
+          return res.status(404).json({ error: "Transactions not found" });
+        }
+
+        res.status(200).json(transactions);
+      } catch (error) {
+        console.error("Error fetching transactions:", error);
+        res.status(500).json({ error: "Internal server error" });
       }
     });
 
