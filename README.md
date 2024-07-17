@@ -3,7 +3,7 @@
 This repository contains the code for a basic Mobile Financial Service (MFS) application developed using React.js, Node.js, Express.js, and MongoDB.
 
 ### Live URL: [https://cashless-sandy.vercel.app](https://cashless-sandy.vercel.app)
-### Server-side code repository: [https://github.com/shahadathhs/cashless-server](https://github.com/shahadathhs/cashless-server)
+### Client-side code repository: [https://github.com/shahadathhs/cashless-client](https://github.com/shahadathhs/cashless-client)
 
 ## Admin Credentials
 - Email: admin@gmail.com
