@@ -289,6 +289,12 @@ async function run() {
         const { recipientPhone, amount, pin } = req.body;
         const senderId = req.user.id;
 
+        const intAmount = parseFloat(amount)
+        // Validate transaction amount
+        if (amount < 50) {
+          return res.status(400).json({ error: "Minimum transaction amount is 50 Taka." });
+        }
+
         const sender = await usersCollection.findOne({
           _id: new ObjectId(senderId),
         });
@@ -296,7 +302,9 @@ async function run() {
           return res.status(401).json({ error: "Invalid PIN" });
         }
 
-        if (sender.balance < amount) {
+        const senderBalance = parseFloat(sender.balance);
+
+        if (senderBalance < intAmount) {
           return res.status(400).json({ error: "Insufficient balance" });
         }
 
@@ -307,45 +315,42 @@ async function run() {
           return res.status(404).json({ error: "Recipient not found" });
         }
 
-        const session = client.startSession();
-        session.startTransaction();
+        // Calculate the transaction fee
+        const transactionFee = intAmount > 100 ? 5 : 0;
+        const totalDeduction = intAmount + transactionFee;
 
-        try {
-          await usersCollection.updateOne(
-            { _id: new ObjectId(senderId) },
-            { $inc: { balance: -amount } },
-            { session }
-          );
-
-          await usersCollection.updateOne(
-            { _id: recipient._id },
-            { $inc: { balance: amount } },
-            { session }
-          );
-
-          const transaction = {
-            senderId: new ObjectId(senderId),
-            recipientId: recipient._id,
-            amount,
-            createdAt: new Date(),
-          };
-
-          await sendMonyCollection.insertOne(transaction, { session });
-
-          await session.commitTransaction();
-          res.status(200).json({ message: "Money sent successfully" });
-        } catch (error) {
-          await session.abortTransaction();
-          console.error("Error sending money:", error);
-          res.status(500).json({ error: "Internal server error" });
-        } finally {
-          session.endSession();
+        if (senderBalance < totalDeduction) {
+          return res.status(400).json({ error: "Insufficient balance for transaction and fee." });
         }
+
+        // Update balances manually without using a session
+        await usersCollection.updateOne(
+          { _id: new ObjectId(senderId) },
+          { $inc: { balance: -totalDeduction } }
+        );
+
+        await usersCollection.updateOne(
+          { _id: recipient._id },
+          { $inc: { balance: intAmount } }
+        );
+
+        const transaction = {
+          senderId: new ObjectId(senderId),
+          recipientId: recipient._id,
+          intAmount,
+          transactionFee,
+          createdAt: new Date(),
+        };
+
+        await sendMonyCollection.insertOne(transaction);
+
+        res.status(200).json({ message: "Money sent successfully" });
       } catch (error) {
         console.error("Error sending money:", error);
         res.status(500).json({ error: "Internal server error" });
       }
     });
+
 
     // Send all cashin requests
     app.get("/cashin", authenticateToken, async (req, res) => {
@@ -370,71 +375,60 @@ async function run() {
     });
 
     // Approve a cash-in request
-    app.post(
-      "/cashin/approve/:requestId",
-      authenticateToken,
-      async (req, res) => {
-        try {
-          const { requestId } = req.params;
-          const agentId = req.user.id;
-
-          const request = await cashinCollection.findOne({
-            _id: new ObjectId(requestId),
-          });
-          if (!request || request.status !== "pending") {
-            return res.status(400).json({ error: "Invalid request" });
-          }
-
-          const session = client.startSession();
-          session.startTransaction();
-
-          try {
-            const user = await usersCollection.findOne({
-              _id: new ObjectId(request.userId),
-            });
-            const agent = await usersCollection.findOne({
-              _id: new ObjectId(agentId),
-            });
-
-            if (agent.balance < request.amount) {
-              await session.abortTransaction();
-              return res.status(400).json({ error: "Insufficient balance" });
-            }
-
-            await usersCollection.updateOne(
-              { _id: new ObjectId(request.userId) },
-              { $inc: { balance: request.amount } },
-              { session }
-            );
-
-            await usersCollection.updateOne(
-              { _id: new ObjectId(agentId) },
-              { $inc: { balance: -request.amount } },
-              { session }
-            );
-
-            await cashinCollection.updateOne(
-              { _id: new ObjectId(requestId) },
-              { $set: { status: "approved", approvedAt: new Date() } },
-              { session }
-            );
-
-            await session.commitTransaction();
-            res.status(200).json({ message: "Cash-in approved successfully" });
-          } catch (error) {
-            await session.abortTransaction();
-            console.error("Error approving cash-in:", error);
-            res.status(500).json({ error: "Internal server error" });
-          } finally {
-            session.endSession();
-          }
-        } catch (error) {
-          console.error("Error approving cash-in:", error);
-          res.status(500).json({ error: "Internal server error" });
+    app.post("/cashin/approve/:requestId", authenticateToken, async (req, res) => {
+      const { requestId } = req.params;
+      const agentId = req.user.id;
+    
+      let session;
+    
+      try {
+        const request = await cashinCollection.findOne({ _id: new ObjectId(requestId) });
+    
+        if (!request || request.status !== "pending") {
+          return res.status(400).json({ error: "Invalid request" });
+        }
+    
+        session = client.startSession();
+        session.startTransaction();
+    
+        const user = await usersCollection.findOne({ _id: new ObjectId(request.userId) });
+        const agent = await usersCollection.findOne({ _id: new ObjectId(agentId) });
+    
+        if (!user || !agent) {
+          await session.abortTransaction();
+          return res.status(404).json({ error: "User or agent not found" });
+        }
+    
+        // Update user balance
+        const updatedBalance = user.balance + request.amount;
+        await usersCollection.updateOne(
+          { _id: new ObjectId(request.userId) },
+          { $set: { balance: updatedBalance } },
+          { session }
+        );
+    
+        // Update request status
+        await cashinCollection.updateOne(
+          { _id: new ObjectId(requestId) },
+          { $set: { status: "approved" } },
+          { session }
+        );
+    
+        await session.commitTransaction();
+        res.status(200).json({ message: "Cash-in request approved successfully" });
+      } catch (error) {
+        if (session) {
+          await session.abortTransaction();
+        }
+        console.error("Error approving cash-in request:", error);
+        res.status(500).json({ error: "Internal server error" });
+      } finally {
+        if (session) {
+          session.endSession();
         }
       }
-    );
-
+    });
+    
     // Approve a cash-out request
     app.post(
       "/cashout/approve/:requestId",
