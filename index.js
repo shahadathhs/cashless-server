@@ -366,6 +366,139 @@ async function run() {
       }
     });
 
+    // Approve a cash-in request
+    app.post(
+      "/cashin/approve/:requestId",
+      authenticateToken,
+      async (req, res) => {
+        try {
+          const { requestId } = req.params;
+          const agentId = req.user.id;
+
+          const request = await cashinCollection.findOne({
+            _id: new ObjectId(requestId),
+          });
+          if (!request || request.status !== "pending") {
+            return res.status(400).json({ error: "Invalid request" });
+          }
+
+          const session = client.startSession();
+          session.startTransaction();
+
+          try {
+            const user = await usersCollection.findOne({
+              _id: new ObjectId(request.userId),
+            });
+            const agent = await usersCollection.findOne({
+              _id: new ObjectId(agentId),
+            });
+
+            if (agent.balance < request.amount) {
+              await session.abortTransaction();
+              return res.status(400).json({ error: "Insufficient balance" });
+            }
+
+            await usersCollection.updateOne(
+              { _id: new ObjectId(request.userId) },
+              { $inc: { balance: request.amount } },
+              { session }
+            );
+
+            await usersCollection.updateOne(
+              { _id: new ObjectId(agentId) },
+              { $inc: { balance: -request.amount } },
+              { session }
+            );
+
+            await cashinCollection.updateOne(
+              { _id: new ObjectId(requestId) },
+              { $set: { status: "approved", approvedAt: new Date() } },
+              { session }
+            );
+
+            await session.commitTransaction();
+            res.status(200).json({ message: "Cash-in approved successfully" });
+          } catch (error) {
+            await session.abortTransaction();
+            console.error("Error approving cash-in:", error);
+            res.status(500).json({ error: "Internal server error" });
+          } finally {
+            session.endSession();
+          }
+        } catch (error) {
+          console.error("Error approving cash-in:", error);
+          res.status(500).json({ error: "Internal server error" });
+        }
+      }
+    );
+
+    // Approve a cash-out request
+    app.post(
+      "/cashout/approve/:requestId",
+      authenticateToken,
+      async (req, res) => {
+        try {
+          const { requestId } = req.params;
+          const agentId = req.user.id;
+
+          const request = await cashoutCollection.findOne({
+            _id: new ObjectId(requestId),
+          });
+          if (!request || request.status !== "pending") {
+            return res.status(400).json({ error: "Invalid request" });
+          }
+
+          const session = client.startSession();
+          session.startTransaction();
+
+          try {
+            const user = await usersCollection.findOne({
+              _id: new ObjectId(request.userId),
+            });
+            const agent = await usersCollection.findOne({
+              _id: new ObjectId(agentId),
+            });
+
+            const totalDeduction = request.amount * 1.015;
+            if (user.balance < totalDeduction) {
+              await session.abortTransaction();
+              return res.status(400).json({ error: "Insufficient balance" });
+            }
+
+            await usersCollection.updateOne(
+              { _id: new ObjectId(request.userId) },
+              { $inc: { balance: -totalDeduction } },
+              { session }
+            );
+
+            await usersCollection.updateOne(
+              { _id: new ObjectId(agentId) },
+              { $inc: { balance: request.amount * 1.015 } },
+              { session }
+            );
+
+            await cashoutCollection.updateOne(
+              { _id: new ObjectId(requestId) },
+              { $set: { status: "approved", approvedAt: new Date() } },
+              { session }
+            );
+
+            await session.commitTransaction();
+            res.status(200).json({ message: "Cash-out approved successfully" });
+          } catch (error) {
+            await session.abortTransaction();
+            console.error("Error approving cash-out:", error);
+            res.status(500).json({ error: "Internal server error" });
+          } finally {
+            session.endSession();
+          }
+        } catch (error) {
+          console.error("Error approving cash-out:", error);
+          res.status(500).json({ error: "Internal server error" });
+        }
+      }
+    );
+
     app.get("/", (req, res) => {
       res.send("Hello World!");
     });
