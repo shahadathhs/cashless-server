@@ -35,8 +35,6 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // await client.connect();
-
     const database = client.db("cashlessDB");
     const usersCollection = database.collection("users");
     const cashoutCollection = database.collection("cashout");
@@ -215,192 +213,169 @@ async function run() {
       }
     });
 
-    // POST endpoint for cash-out
+    // Transaction-related API endpoints
+
+    // User makes a cash-out request
     app.post("/cashout", authenticateToken, async (req, res) => {
       try {
-        const { amount, pin, phone, agentPhone } = req.body;
+        const { agentPhone, amount } = req.body;
+        const userId = req.user.id;
 
-        // Verify PIN
-        const user = await usersCollection.findOne({ phone });
-        if (!user || !bcrypt.compareSync(pin, user.pin)) {
-          return res.status(401).json({ error: "Invalid PIN" });
+        const agent = await usersCollection.findOne({ phone: agentPhone });
+        if (!agent || agent.role !== "agent") {
+          return res.status(404).json({ error: "Agent not found" });
         }
-        const intAmount = parseInt(amount);
-        // Store cash-out request
-        const result = await cashoutCollection.insertOne({
-          userId: user._id,
-          amount: intAmount,
+
+        const user = await usersCollection.findOne({
+          _id: new ObjectId(userId),
+        });
+        if (user.balance < amount) {
+          return res.status(400).json({ error: "Insufficient balance" });
+        }
+
+        const cashoutRequest = {
+          userId: new ObjectId(userId),
           agentPhone,
+          amount,
           status: "pending",
           createdAt: new Date(),
-        });
+        };
 
-        if (!result.insertedId) {
-          return res
-            .status(500)
-            .json({ error: "Failed to store cash-out request" });
-        }
-
-        // Respond with success message
+        await cashoutCollection.insertOne(cashoutRequest);
         res
           .status(200)
-          .json({ message: "Cash-out request stored successfully" });
+          .json({ message: "Cash-out request created successfully" });
       } catch (error) {
-        console.error("Error during cash-out:", error);
+        console.error("Error creating cash-out request:", error);
         res.status(500).json({ error: "Internal server error" });
       }
     });
 
-    // POST endpoint for cash-in
+    // User makes a cash-in request
     app.post("/cashin", authenticateToken, async (req, res) => {
       try {
-        const { amount, pin, phone, agentPhone } = req.body;
+        const { agentPhone, amount } = req.body;
+        const userId = req.user.id;
 
-        // Verify PIN
-        const user = await usersCollection.findOne({ phone });
-        if (!user || !bcrypt.compareSync(pin, user.pin)) {
-          return res.status(401).json({ error: "Invalid PIN" });
+        const agent = await usersCollection.findOne({ phone: agentPhone });
+        if (!agent || agent.role !== "agent") {
+          return res.status(404).json({ error: "Agent not found" });
         }
-        const intAmount = parseInt(amount);
 
-        // Store cash-in request
-        const result = await cashinCollection.insertOne({
-          userId: user._id,
-          amount: intAmount,
+        const cashinRequest = {
+          userId: new ObjectId(userId),
           agentPhone,
+          amount,
           status: "pending",
           createdAt: new Date(),
-        });
+        };
 
-        if (!result.insertedId) {
-          return res
-            .status(500)
-            .json({ error: "Failed to store cash-in request" });
-        }
-
-        // Respond with success message
+        await cashinCollection.insertOne(cashinRequest);
         res
           .status(200)
-          .json({ message: "Cash-in request stored successfully" });
+          .json({ message: "Cash-in request created successfully" });
       } catch (error) {
-        console.error("Error during cash-in:", error);
+        console.error("Error creating cash-in request:", error);
         res.status(500).json({ error: "Internal server error" });
       }
     });
 
-    // POST endpoint for sending money
+    // Send money to another user
     app.post("/sendmoney", authenticateToken, async (req, res) => {
       try {
-        const { amount, pin, senderPhone, receiverPhone } = req.body;
+        const { recipientPhone, amount, pin } = req.body;
+        const senderId = req.user.id;
 
-        console.log("Received send money request:", {
-          amount,
-          pin,
-          senderPhone,
-          receiverPhone,
+        const sender = await usersCollection.findOne({
+          _id: new ObjectId(senderId),
         });
-
-        // Verify PIN
-        const sender = await usersCollection.findOne({ phone: senderPhone });
-        if (!sender) {
-          console.log("Sender not found");
-          return res.status(404).json({ error: "Sender not found" });
-        }
-        if (!bcrypt.compareSync(pin, sender.pin)) {
-          console.log("Invalid PIN");
+        if (!sender || !bcrypt.compareSync(pin, sender.pin)) {
           return res.status(401).json({ error: "Invalid PIN" });
         }
 
-        const amountNumber = parseFloat(amount);
-        if (amountNumber < 50) {
-          console.log("Transaction amount less than 50 Taka");
-          return res
-            .status(400)
-            .json({ error: "Minimum transaction amount is 50 Taka." });
+        if (sender.balance < amount) {
+          return res.status(400).json({ error: "Insufficient balance" });
         }
 
-        // Calculate fee
-        const fee = amountNumber > 100 ? 5 : 0;
-        const totalAmount = amountNumber + fee;
-
-        // Check sender balance
-        if (sender.balance < totalAmount) {
-          console.log("Insufficient balance");
-          return res.status(400).json({ error: "Insufficient balance." });
-        }
-
-        // Find receiver
-        const receiver = await usersCollection.findOne({
-          phone: receiverPhone,
+        const recipient = await usersCollection.findOne({
+          phone: recipientPhone,
         });
-        if (!receiver) {
-          console.log("Receiver not found");
-          return res.status(404).json({ error: "Receiver not found." });
+        if (!recipient) {
+          return res.status(404).json({ error: "Recipient not found" });
         }
 
-        // Perform transaction
-        await usersCollection.updateOne(
-          { _id: sender._id },
-          { $inc: { balance: -totalAmount } }
-        );
+        const session = client.startSession();
+        session.startTransaction();
 
-        await usersCollection.updateOne(
-          { _id: receiver._id },
-          { $inc: { balance: amountNumber } }
-        );
+        try {
+          await usersCollection.updateOne(
+            { _id: new ObjectId(senderId) },
+            { $inc: { balance: -amount } },
+            { session }
+          );
 
-        // Store transaction details
-        await sendMonyCollection.insertOne({
-          senderId: sender._id,
-          receiverId: receiver._id,
-          amount: amountNumber,
-          fee,
-          createdAt: new Date(),
-        });
+          await usersCollection.updateOne(
+            { _id: recipient._id },
+            { $inc: { balance: amount } },
+            { session }
+          );
 
-        console.log("Transaction successful");
-        res.status(200).json({ message: "Money sent successfully." });
-      } catch (error) {
-        console.error("Error during transaction:", error);
-        res.status(500).json({ error: "Internal server error." });
-      }
-    });
+          const transaction = {
+            senderId: new ObjectId(senderId),
+            recipientId: recipient._id,
+            amount,
+            createdAt: new Date(),
+          };
 
-    // Get last 10 transactions for a user
-    app.get("/transactions/:userId", authenticateToken, async (req, res) => {
-      try {
-        const { userId } = req.params;
-        const transactions = await sendMonyCollection
-          .find({ senderId: new ObjectId(userId) })
-          .sort({ createdAt: -1 })
-          .limit(10)
-          .toArray();
+          await sendMonyCollection.insertOne(transaction, { session });
 
-        if (!transactions) {
-          return res.status(404).json({ error: "Transactions not found" });
+          await session.commitTransaction();
+          res.status(200).json({ message: "Money sent successfully" });
+        } catch (error) {
+          await session.abortTransaction();
+          console.error("Error sending money:", error);
+          res.status(500).json({ error: "Internal server error" });
+        } finally {
+          session.endSession();
         }
-
-        res.status(200).json(transactions);
       } catch (error) {
-        console.error("Error fetching transactions:", error);
+        console.error("Error sending money:", error);
         res.status(500).json({ error: "Internal server error" });
       }
     });
 
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
-  } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    // Send all cashin requests
+    app.get("/cashin", authenticateToken, async (req, res) => {
+      try {
+        const cashinRequests = await cashinCollection.find().toArray();
+        res.status(200).json(cashinRequests);
+      } catch (error) {
+        console.error("Error fetching cashin requests:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // Send all cashout requests
+    app.get("/cashout", authenticateToken, async (req, res) => {
+      try {
+        const cashoutRequests = await cashoutCollection.find().toArray();
+        res.status(200).json(cashoutRequests);
+      } catch (error) {
+        console.error("Error fetching cashout requests:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    app.get("/", (req, res) => {
+      res.send("Hello World!");
+    });
+
+    app.listen(port, () => {
+      console.log(`Server is running on port ${port}`);
+    });
+  } catch (error) {
+    console.error(error);
   }
 }
+
 run().catch(console.dir);
-
-app.get("/", (req, res) => {
-  res.send("Cashless Server Running!");
-});
-
-app.listen(port, () => {
-  console.log(`Cashless Server listening on port ${port}`);
-});
