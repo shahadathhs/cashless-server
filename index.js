@@ -40,6 +40,7 @@ async function run() {
     const database = client.db("cashlessDB");
     const usersCollection = database.collection("users");
     const cashoutCollection = database.collection("cashout");
+    const sendMonyCollection = database.collection("sendMoney");
 
     // JWT-related API endpoints
     const authenticateToken = (req, res, next) => {
@@ -203,11 +204,11 @@ async function run() {
         if (!user || !bcrypt.compareSync(pin, user.pin)) {
           return res.status(401).json({ error: "Invalid PIN" });
         }
-
+        const intAmount = parseInt(amount);
         // Store cash-out request (adjust based on your DB schema)
         const result = await cashoutCollection.insertOne({
           userId: user._id,
-          amount,
+          amount: intAmount,
           agentPhone,
           status: "pending", // Example: you might want to track status
           createdAt: new Date(),
@@ -226,6 +227,84 @@ async function run() {
       } catch (error) {
         console.error("Error during cash-out:", error);
         res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // POST endpoint for sending money
+    app.post("/sendmoney", authenticateToken, async (req, res) => {
+      try {
+        const { amount, pin, senderPhone, receiverPhone } = req.body;
+
+        console.log("Received send money request:", {
+          amount,
+          pin,
+          senderPhone,
+          receiverPhone,
+        });
+
+        // Verify PIN
+        const sender = await usersCollection.findOne({ phone: senderPhone });
+        if (!sender) {
+          console.log("Sender not found");
+          return res.status(404).json({ error: "Sender not found" });
+        }
+        if (!bcrypt.compareSync(pin, sender.pin)) {
+          console.log("Invalid PIN");
+          return res.status(401).json({ error: "Invalid PIN" });
+        }
+
+        const amountNumber = parseFloat(amount);
+        if (amountNumber < 50) {
+          console.log("Transaction amount less than 50 Taka");
+          return res
+            .status(400)
+            .json({ error: "Minimum transaction amount is 50 Taka." });
+        }
+
+        // Calculate fee
+        const fee = amountNumber > 100 ? 5 : 0;
+        const totalAmount = amountNumber + fee;
+
+        // Check sender balance
+        if (sender.balance < totalAmount) {
+          console.log("Insufficient balance");
+          return res.status(400).json({ error: "Insufficient balance." });
+        }
+
+        // Find receiver
+        const receiver = await usersCollection.findOne({
+          phone: receiverPhone,
+        });
+        if (!receiver) {
+          console.log("Receiver not found");
+          return res.status(404).json({ error: "Receiver not found." });
+        }
+
+        // Perform transaction
+        await usersCollection.updateOne(
+          { _id: sender._id },
+          { $inc: { balance: -totalAmount } }
+        );
+
+        await usersCollection.updateOne(
+          { _id: receiver._id },
+          { $inc: { balance: amountNumber } }
+        );
+
+        // Store transaction details
+        await sendMonyCollection.insertOne({
+          senderId: sender._id,
+          receiverId: receiver._id,
+          amount: amountNumber,
+          fee,
+          createdAt: new Date(),
+        });
+
+        console.log("Transaction successful");
+        res.status(200).json({ message: "Money sent successfully." });
+      } catch (error) {
+        console.error("Error during transaction:", error);
+        res.status(500).json({ error: "Internal server error." });
       }
     });
 
