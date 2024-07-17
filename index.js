@@ -194,6 +194,23 @@ async function run() {
       }
     });
 
+    // real-time balance
+    app.get("/balance/:userId", authenticateToken, async (req, res) => {
+      try {
+        const { userId } = req.params;
+        const user = await usersCollection.findOne({ _id: new ObjectId(userId) }, { projection: { balance: 1 } });
+        
+        if (!user) {
+          return res.status(404).json({ error: "User not found" });
+        }
+    
+        res.status(200).json({ balance: user.balance });
+      } catch (error) {
+        console.error("Error fetching balance:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });    
+
     // POST endpoint for cash-out
     app.post("/cashout", authenticateToken, async (req, res) => {
       try {
