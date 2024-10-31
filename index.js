@@ -497,7 +497,7 @@ async function run() {
     );
 
     app.get("/", (req, res) => {
-      res.send("Hello World!");
+      res.send("Cashless Server!");
     });
 
     app.listen(port, () => {
